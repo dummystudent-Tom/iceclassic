@@ -20,6 +20,8 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ github.event_name == 'push' && secrets.FG_ICECLASSIC || github.token }}
+        ref: ${{ github.event.pull_request.head.sha }} #https://stackoverflow.com/questions/62334460/git-history-in-a-github-action
+        fetch-depth: 0
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -30,6 +32,59 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+
+    - name: Validate predictions.txt changes (PR only)
+      if: ${{ github.event_name == 'pull_request' }}
+      run: |
+        echo "Checking if predictions.txt changes are valid (only additions allowed)..."
+        
+        # Check if predictions.txt was modified
+        if git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -q "data/predictions.txt"; then
+          echo "predictions.txt was modified, validating changes..."
+          
+          # Check for deletions (lines starting with -)
+          DELETIONS=$(git diff ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} data/predictions.txt | grep "^-" | grep -v "^---" || true)
+          
+          if [ ! -z "$DELETIONS" ]; then
+            echo "❌ ERROR: Deletions found in predictions.txt!"
+            echo "Students are only allowed to ADD predictions, not delete existing ones."
+            echo ""
+            echo "Deleted lines:"
+            echo "$DELETIONS"
+            exit 1
+          else
+            echo "✅ Only additions found in predictions.txt - this is allowed."
+          fi
+        else
+          echo "predictions.txt was not modified in this PR."
+        fi
+
+    - name: Validate predictions.txt CSV format (PR only)
+      if: ${{ github.event_name == 'pull_request' }}
+      run: |
+        echo "Checking CSV format of predictions.txt..."
+        
+        # Check if predictions.txt exists
+        if [ ! -f "data/predictions.txt" ]; then
+          echo "❌ ERROR: data/predictions.txt file not found!"
+          exit 1
+        fi
+        
+        # Validate CSV format - each line should have exactly 2 columns separated by semicolon
+        INVALID_LINES=$(awk -F';' 'NF != 2 { print NR ": " $0 }' data/predictions.txt || true)
+        
+        if [ ! -z "$INVALID_LINES" ]; then
+          echo "❌ ERROR: Invalid CSV format in predictions.txt!"
+          echo "Each line must have exactly 2 columns separated by semicolon (;)"
+          echo ""
+          echo "Invalid lines found:"
+          echo "$INVALID_LINES"
+          echo ""
+          echo "Expected format: Name;YYYY-MM-DD HH:MM:SS"
+          exit 1
+        else
+          echo "✅ CSV format validation passed - all lines have exactly 2 columns."
+        fi
 
     - name: Run Python script
       run: python -W error create_figure.py
